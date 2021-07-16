@@ -1,0 +1,10 @@
+POST http://localhost:3000/api/tournament/register HTTP/1.1
+content-type: application/json
+
+{
+    "token":"firebase auth token",
+    "gameId":"xasxss",
+    "tournamentId":"Tournament Id",
+    "clanId":"Clan Id"
+
+}

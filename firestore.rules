@@ -1,0 +1,234 @@
+	rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+  function isAuth(){
+    return request.auth != null && request.auth.token.firebase.sign_in_provider != 'anonymous'
+  }
+  function isAnonymous(){
+    return request.auth.token.firebase.sign_in_provider == 'anonymous' 
+  }
+  function isAdmin(){
+    return request.auth.token.role == 'admin'
+  }
+  function validateKeys(listOfKeys){
+    let hasKeys = request.resource.data.keys().hasOnly(listOfKeys);
+    let hasLength =  request.resource.data.keys().size() == listOfKeys.size();
+    return hasKeys && hasLength
+  }
+  function checkInt(value){
+  	return value is int;
+  }
+	function checkString(value){
+  	return value is string && value == value.trim();
+  }  
+  function checkStringCase(value){
+    return checkString(value) && value.lower() ==value;
+  }
+  
+  function checkStringLength(value , min , max){
+  	return value.size() > min && value.size() <max
+  }
+  function checkTime(value){
+  	return value is timestamp ;
+  }
+  function clanBatchWriteCheck(id){
+    let after = getAfter(/databases/$(database)/documents/user/$(request.auth.uid)).data.clanData;
+    return  after[0].name == request.resource.data.clanName && after[0].primayGame == request.resource.data.primayGame;
+  }
+  function checkKickFromSecretAndClan(clanId){
+    let secretData =  get(/databases/$(database)/documents/clan/$(clanId)/secret/data).data;
+    let newSecretData = getAfter(/databases/$(database)/documents/clan/$(clanId)/secret/data).data;
+    let clanData =   get(/databases/$(database)/documents/clan/$(clanId)).data;
+    let newClanData =  getAfter(/databases/$(database)/documents/clan/$(clanId)).data;
+    let removedMemberId = secretData.membersId.removeAll(newSecretData.membersId);
+    let isSecretChanged =  (removedMemberId).size() == 1 && (clanData.members.removeAll(newClanData.members)).size() == 1 && clanData.members.removeAll(newClanData.members)[0].id == removedMemberId[0];
+    return isSecretChanged && (request.auth.uid == removedMemberId[0] || request.auth.uid == clanData.clanLeaderId) && clanData.clanLeaderId != removedMemberId[0];
+  }
+  function checkKickFromUser(userId){
+    let userData = get(/databases/$(database)/documents/user/$(userId)).data;
+    let newUserData = getAfter(/databases/$(database)/documents/user/$(userId)).data;
+    //get clan id from removed user data
+    let removedClanData = userData.clanData.removeAll(newUserData.clanData);
+     let secretData =  get(/databases/$(database)/documents/clan/$(removedClanData[0].name)/secret/data).data;
+    let newSecretData = getAfter(/databases/$(database)/documents/clan/$(removedClanData[0].name)/secret/data).data;
+    let removedMemberId = secretData.membersId.removeAll(newSecretData.membersId);
+    return removedClanData.size() == 1 && removedMemberId.size() == 1 && removedMemberId[0] == userId
+
+  }
+
+	match /user/{userId}{
+  //Creating User
+  	allow create :if isAuth() &&
+    							request.auth.uid == userId &&
+                  (validateKeys(['nickname' , 'birthdate'])&&
+                  checkString(request.resource.data.nickname) && 
+                  checkTime(request.resource.data.birthdate) ) ||
+                     (validateKeys(['nickname'])&&
+                     checkString(request.resource.data.nickname)
+                  )
+                  
+    allow get :if isAnonymous() || isAuth() 
+
+    //for kick from clan
+   
+
+    
+  //Updating User Portfolio , clanData
+	allow update : if isAuth() && 
+  							request.auth.uid == userId &&
+                
+                request.resource.data.diff(resource.data).affectedKeys().size() ==1 &&
+                request.resource.data.diff(resource.data).affectedKeys() == ['clanData'].toSet()&&
+                request.resource.data.clanData.size() <= 1 &&
+                (
+                request.resource.data.diff(resource.data).addedKeys().size() == 1 ||  
+                request.resource.data.clanData.size() == resource.data.clanData.size() +1 
+                )&&
+                request.resource.data.clanData[request.resource.data.clanData.size()-1].keys().hasOnly([ 'name' , 'primayGame', 'isAdmin']) &&
+                request.resource.data.clanData[request.resource.data.clanData.size()-1].keys().size() >=2 &&
+                request.resource.data.clanData[request.resource.data.clanData.size()-1].keys().size() <=3 &&
+                checkString(request.resource.data.clanData[request.resource.data.clanData.size()-1].name) &&
+                checkString(request.resource.data.clanData[request.resource.data.clanData.size()-1].primayGame)
+                  
+
+              
+  allow update :if isAuth() && 
+                request.resource.data.diff(resource.data).affectedKeys().size() == 1 && 
+                checkKickFromUser(userId)
+
+
+  
+  }
+
+    match /user/{userId}/private/gamertags{
+      allow get: if userId == request.auth.uid
+    }  
+  
+  match /clan/{clanId}{
+    allow get : if isAnonymous() || isAuth()
+
+    //kick from clan
+    allow update : if isAuth() && 
+      request.resource.data.diff(resource.data).affectedKeys().size() == 1 && 
+      (checkKickFromSecretAndClan(clanId))
+
+    //for requests related to clan Like Delete Clan
+    allow update : if isAuth() &&
+      request.resource.data.requests.size() == 1 &&
+      request.resource.data.diff(resource.data).affectedKeys().size() == 1 &&
+      request.resource.data.diff(resource.data).affectedKeys() == ['requests'].toSet() &&
+      request.resource.data.requests[0] == "Delete Clan" &&
+      getAfter(/databases/$(database)/documents/requests/clanDelets).data.clanData.size() -1 == get(/databases/$(database)/documents/requests/clanDelets).data.clanData.size()
+
+
+    //Join To CLan
+    allow update :if   isAuth()&&
+      request.resource.data.members[request.resource.data.members.size() - 1].name == request.auth.token.name &&
+      request.resource.data.members[request.resource.data.members.size() - 1].id == request.auth.uid &&
+      request.resource.data.members.size() <=6 && 
+      request.resource.data.diff(resource.data).affectedKeys().size() == 1&&
+      request.resource.data.diff(resource.data).affectedKeys()== ['members'].toSet()&&
+      request.resource.data.members.size() == resource.data.members.size() + 1&&
+      clanBatchWriteCheck(clanId)
+    
+    //Changing Tagline
+    allow update: if isAuth() &&
+      checkStringLength(request.resource.data.clanTagline , 3 , 100)&&
+      request.resource.data.diff(resource.data).affectedKeys().size() == 1 && 
+      request.resource.data.diff(resource.data).affectedKeys() == ['clanTagline'].toSet() &&
+      request.resource.data.requests.size() == 1 &&
+      resource.data.clanLeaderId == request.auth.uid 
+
+
+
+  //creating clan
+    allow create :if isAuth() &&
+      validateKeys(['clanLeaderId' , 'clanName' , 'clanTagline' , 'members' , 'primayGame']) &&      
+      request.auth.uid == request.resource.data.clanLeaderId &&
+      checkString(request.resource.data.clanName) &&
+      request.resource.data.clanName.split('/').size() == 1 &&
+      checkStringLength(request.resource.data.clanName , 2 , 100)&&
+      checkString(request.resource.data.clanTagline) &&
+      checkStringLength(request.resource.data.clanTagline , 2 , 100)&&
+      request.resource.data.members[0].keys().hasOnly(['id' , 'name']) &&
+      request.resource.data.members[0].keys().size() == 2 &&
+      request.resource.data.members[0].id == request.auth.uid &&
+      request.resource.data.members[0].name == request.auth.token.name &&
+      checkStringCase(request.resource.data.primayGame)&&
+      clanBatchWriteCheck(clanId)
+     }
+	match /clan/{clanId}/secret/data{
+
+  	allow create : if isAuth() &&
+      validateKeys(['password' , 'membersId']) &&
+      checkString(request.resource.data.password) &&
+      request.auth.uid in request.resource.data.membersId &&
+      request.resource.data.membersId.size() == 1
+
+  //adding new user to clan
+    allow update : if isAuth() &&
+      (
+        validateKeys(['password' , 'membersId']) || 
+        validateKeys(['password' , 'membersId' , 'oldPassword'])
+      )&&
+      checkString(request.resource.data.password) &&
+      request.resource.data.membersId[request.resource.data.membersId.size() -1] == request.auth.uid &&
+      request.resource.data.password== resource.data.password &&
+      resource.data.membersId.size()+1 == request.resource.data.membersId.size()
+
+//Changing password
+    allow update : if isAuth() &&
+      checkStringLength(request.resource.data.password ,3, 50 ) &&
+      request.resource.data.password != resource.data.password &&
+      resource.data.password == request.resource.data.oldPassword &&
+     request.resource.data.diff(resource.data).affectedKeys().hasAll(['oldPassword' , 'password'])&&
+      get(/databases/$(database)/documents/clan/$(clanId)).data.clanLeaderId == request.auth.uid
+//kick someone from clan
+    allow update : if isAuth() && 
+        (
+        validateKeys(['password' , 'membersId']) || 
+        validateKeys(['password' , 'membersId' , 'oldPassword'])
+      )&&
+      request.resource.data.password== resource.data.password &&
+      checkKickFromSecretAndClan(clanId)
+
+
+
+
+
+  }
+  match /requests/clanDelets{
+    allow update : if isAuth() &&
+    request.resource.data.diff(resource.data).affectedKeys().size() == 1 &&
+    request.resource.data.diff(resource.data).affectedKeys() == ['clanData'].toSet() &&
+    request.resource.data.clanData.removeAll(resource.data.clanData).size() == 1 &&
+    request.resource.data.clanData.removeAll(resource.data.clanData)[0].keys().hasOnly(['clanName' , 'reason']) &&
+    getAfter(/databases/$(database)/documents/clan/$(request.resource.data.clanData.removeAll(resource.data.clanData)[0].clanName)).data.requests.hasAny(['Delete Clan'])
+
+  }
+
+
+  //Admin Things Only
+  //For Adding Tournaments to private 
+  match /games/{gameName}/private/{id}{
+    allow read, write:if isAdmin()
+  }
+  //for adding tournament to public
+  match /games/{gameName}/tournaments/{id}{
+    allow read, write:if isAdmin()
+  }
+
+  
+
+
+  //Things For Non Sign In Public
+  match /games/{gameName}/tournaments/{id}{
+    allow get:if isAnonymous() || isAuth();
+  }
+  
+  match /{document=**} {
+      allow read, write: if false     
+    }
+  
+}
+}

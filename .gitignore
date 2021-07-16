@@ -43,3 +43,6 @@ firebase-debug.log*
 database-debug.log*
 .env
 .env
+firebase_admin_key.json
+pubsub-debug.log
+src/config/firebaseConfig.ts
